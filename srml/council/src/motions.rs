@@ -176,7 +176,7 @@ decl_storage! {
 		pub Proposals get(proposals): Vec<T::Hash>;
 		/// Actual proposal for a given hash, if it's current.
 		pub ProposalOf get(proposal_of): map T::Hash => Option<<T as Trait>::Proposal>;
-		/// Votes for a given proposal: (Proposal index, required yes votes, yes voters, no voters).
+		/// Votes for a given proposal: (Proposal index, required number of yes votes, yes voters, no voters).
 		pub Voting get(voting): map T::Hash => Option<(ProposalIndex, u32, Vec<T::AccountId>, Vec<T::AccountId>)>;
 		/// Proposals so far.
 		pub ProposalCount get(proposal_count): u32;

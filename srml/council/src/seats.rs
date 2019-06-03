@@ -84,7 +84,7 @@ use system::{self, ensure_signed};
 
 use srml_support::decl_module;
 
-/// Index for the total number of votes that have happened or are in progress.
+/// Index for the total number of vote tallies that have happened or are in progress.
 pub type VoteIndex = u32;
 
 type BalanceOf<T> = <<T as democracy::Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::Balance;
@@ -300,7 +300,7 @@ decl_module! {
 			<PresentationDuration<T>>::put(count);
 		}
 
-		/// Set the term duration.
+		/// Set the term duration (number of blocks).
 		fn set_term_duration(#[compact] count: T::BlockNumber) {
 			<TermDuration<T>>::put(count);
 		}
@@ -318,18 +318,18 @@ decl_storage! {
 	trait Store for Module<T: Trait> as Council {
 
 		// parameters
-		/// How much should be locked up in order to submit one's candidacy.
+		/// Amount that must be locked up in order to submit one's candidacy.
 		pub CandidacyBond get(candidacy_bond) config(): BalanceOf<T> = 9.into();
-		/// How much should be locked up in order to be able to submit votes.
+		/// Amount that must be locked up in order to be able to submit votes.
 		pub VotingBond get(voting_bond) config(voter_bond): BalanceOf<T>;
 		/// The punishment, per voter, if you provide an invalid presentation.
 		pub PresentSlashPerVoter get(present_slash_per_voter) config(): BalanceOf<T> = 1.into();
-		/// How many runners-up should have their approvals persist until the next vote.
+		/// Number of runners-up who should have their approvals persist until the next vote.
 		pub CarryCount get(carry_count) config(): u32 = 2;
-		/// How long to give each top candidate to present themselves after the vote ends.
+		/// Number of blocks to give each top candidate to present themselves after the vote ends.
 		pub PresentationDuration get(presentation_duration) config(): T::BlockNumber = 1000.into();
-		/// How many vote indices need to go by after a target voter's last vote before they can be reaped if their
-		/// approvals are moot.
+		/// Number of vote indices that need to go by after a target voter's last vote before they can
+		/// be reaped if their approvals are moot.
 		pub InactiveGracePeriod get(inactivity_grace_period) config(inactive_grace_period): VoteIndex = 1;
 		/// How often (in blocks) to check for new votes.
 		pub VotingPeriod get(voting_period) config(approval_voting_period): T::BlockNumber = 1000.into();
@@ -340,9 +340,9 @@ decl_storage! {
 
 		// permanent state (always relevant, changes only at the finalization of voting)
 		/// The current council. When there's a vote going on, this should still be used for executive
-		/// matters. The block number (second element in the tuple) is the block that the associated
-		/// account ID's position is active until (calculated by the sum of the block number when the
-		/// council member was elected and his or her term duration).
+		/// matters. The block number is the block that the associated account ID's position is
+		/// active until (calculated by the sum of the block number when the council member was
+		/// elected and his or her term duration).
 		pub ActiveCouncil get(active_council) config(): Vec<(T::AccountId, T::BlockNumber)>;
 		/// The total number of votes that have happened or are in progress.
 		pub VoteCount get(vote_index): VoteIndex;

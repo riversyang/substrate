@@ -139,7 +139,7 @@ decl_storage! {
 		/// Period (in blocks) that a vote is open for.
 		pub VotingPeriod get(voting_period) config(): T::BlockNumber = 3.into();
 		/// Number of blocks by which to delay enactment of successful,
-		/// non-unanimous, Council-instigated referendum proposals.
+		/// non-unanimous, council-instigated referendum proposals.
 		pub EnactDelayPeriod get(enact_delay_period) config(): T::BlockNumber = 0.into();
 		/// A list of proposals by block number and proposal ID.
 		pub Proposals get(proposals) build(|_| vec![]): Vec<(T::BlockNumber, T::Hash)>; // ordered by expiry.
@@ -245,7 +245,7 @@ impl<T: Trait> Module<T> {
 	/// Might end up:
 	///
 	///   - cancelling a referendum, or
-	///   - enacting immediately or with a delay
+	///   - enacting immediately or with a delay,
 	///
 	/// based on the votes and the type of the proposal.
 	fn end_block(now: T::BlockNumber) -> Result {
@@ -260,7 +260,7 @@ impl<T: Trait> Module<T> {
 				}
 			} else {
 				Self::deposit_event(RawEvent::TallyReferendum(proposal_hash.clone(), tally.0, tally.1, tally.2));
-				// More yay then nay and abstain. Will be enacted either immediately or with a delay
+				// More yay than nay and abstain. Will be enacted either immediately or with a delay
 				if tally.0 > tally.1 + tally.2 {
 					Self::kill_veto_of(&proposal_hash);
 					// If there were no nay-votes from the council, then it's weakly uncontroversial; we enact immediately.
