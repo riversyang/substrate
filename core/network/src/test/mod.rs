@@ -37,8 +37,10 @@ use consensus::import_queue::{
 	Link, SharedBlockImport, SharedJustificationImport, Verifier, SharedFinalityProofImport,
 	SharedFinalityProofRequestBuilder,
 };
-use consensus::{Error as ConsensusError, well_known_cache_keys::{self, Id as CacheKeyId}};
-use consensus::{BlockOrigin, ForkChoiceStrategy, ImportBlock, JustificationImport};
+use consensus::{
+	BlockOrigin, Error as ConsensusError, ForkChoiceStrategy, ImportBlock, JustificationImport,
+	well_known_cache_keys::{self, Id as CacheKeyId}
+};
 use crate::consensus_gossip::{ConsensusGossip, MessageRecipient as GossipMessageRecipient, TopicNotification};
 use futures::{prelude::*, sync::{mpsc, oneshot}};
 use crate::message::Message;
@@ -197,11 +199,11 @@ impl PeersClient {
 		&self,
 		id: BlockId<Block>,
 		justification: Option<Justification>,
-		notify: bool
+		notify: bool,
 	) -> ClientResult<()> {
 		match *self {
-			PeersClient::Full(ref client) => client.finalize_block(id, justification, notify),
-			PeersClient::Light(ref client) => client.finalize_block(id, justification, notify),
+			PeersClient::Full(ref client) => client.finalize_block(id, justification, None, notify),
+			PeersClient::Light(ref client) => client.finalize_block(id, justification, None, notify),
 		}
 	}
 }
