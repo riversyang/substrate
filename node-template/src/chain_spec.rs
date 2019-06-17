@@ -1,7 +1,7 @@
 use primitives::{ed25519, sr25519, Pair};
 use node_template_runtime::{
-	AccountId, AuraId as AuthorityId, GenesisConfig, AuraConfig, TimestampConfig, BalancesConfig,
-	SudoConfig, IndicesConfig, SystemConfig
+	AccountId, GenesisConfig, ConsensusConfig, TimestampConfig, BalancesConfig,
+	SudoConfig, IndicesConfig, SystemConfig, WASM_BINARY,
 };
 use substrate_service;
 
@@ -91,7 +91,7 @@ impl Alternative {
 fn testnet_genesis(initial_authorities: Vec<AuthorityId>, endowed_accounts: Vec<AccountId>, root_key: AccountId) -> GenesisConfig {
 	GenesisConfig {
 		system: Some(SystemConfig {
-			code: include_bytes!("../runtime/wasm/target/wasm32-unknown-unknown/release/node_template_runtime_wasm.compact.wasm").to_vec(),
+			code: WASM_BINARY.to_vec(),
 			changes_trie_config: Default::default(),
 			_genesis_phantom_data: Default::default(),
 		}),

@@ -20,7 +20,9 @@ use primitives::{ed25519, sr25519, Pair, crypto::UncheckedInto};
 use node_primitives::{AccountId, AuraId};
 use node_runtime::{CouncilSeatsConfig, AuraConfig, DemocracyConfig, SystemConfig,
 	SessionConfig, StakingConfig, StakerStatus, TimestampConfig, BalancesConfig, TreasuryConfig,
-	SudoConfig, ContractConfig, GrandpaConfig, IndicesConfig, Permill, Perbill, SessionKeys};
+	SudoConfig, ContractConfig, GrandpaConfig, IndicesConfig, Permill, Perbill, SessionKeys,
+	WASM_BINARY
+};
 pub use node_runtime::GenesisConfig;
 use substrate_service;
 use hex_literal::hex;
@@ -102,7 +104,7 @@ fn staging_testnet_config_genesis() -> GenesisConfig {
 
 	GenesisConfig {
 		system: Some(SystemConfig {
-			code: include_bytes!("../../runtime/wasm/target/wasm32-unknown-unknown/release/node_runtime.compact.wasm").to_vec(),    // FIXME change once we have #1252
+			code: WASM_BINARY.to_vec(),
 			_genesis_phantom_data: Default::default(),
 			changes_trie_config: Default::default(),
 		}),
@@ -292,7 +294,7 @@ pub fn testnet_genesis(
 
 	GenesisConfig {
 		system: Some(SystemConfig {
-			code: include_bytes!("../../runtime/wasm/target/wasm32-unknown-unknown/release/node_runtime.compact.wasm").to_vec(),
+			code: WASM_BINARY.to_vec(),
 			_genesis_phantom_data: Default::default(),
 			changes_trie_config: Default::default(),
 		}),
