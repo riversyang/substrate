@@ -180,7 +180,7 @@ impl offchain::Externalities for TestOffchainExt {
 		new_value: &[u8]
 	) -> bool {
 		let mut state = self.0.write();
-		state.storage.compare_and_set(b"", key, old_value, new_value)
+		state.storage.compare_and_set(b"", key, Some(old_value), new_value)
 	}
 
 	fn local_storage_get(&mut self, key: &[u8]) -> Option<Vec<u8>> {
