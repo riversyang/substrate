@@ -24,7 +24,7 @@ use primitives::offchain::{
 	Externalities as OffchainExt,
 	CryptoKind, CryptoKeyId,
 };
-use primitives::crypto::Pair;
+use primitives::crypto::{Pair, Protected};
 use primitives::{ed25519, sr25519};
 use runtime_primitives::{
 	generic::BlockId,
@@ -39,11 +39,9 @@ enum ExtMessage {
 
 /// A persisted key seed.
 #[derive(Encode, Decode)]
-pub enum CryptoSeed {
-	/// ED25519 seed
-	Ed25519(ed25519::Seed),
-	/// SR25519 seed
-	Sr25519(sr25519::Seed),
+struct CryptoKey {
+	kind: CryptoKind,
+	phrase: String,
 }
 
 /// Asynchronous offchain API.
@@ -52,6 +50,7 @@ pub enum CryptoSeed {
 pub(crate) struct Api<S> {
 	sender: mpsc::UnboundedSender<ExtMessage>,
 	db: S,
+	keys_password: Protected<String>,
 }
 
 fn unavailable_yet<R: Default>(name: &str) -> R {
@@ -66,13 +65,26 @@ const STORAGE_PREFIX: &[u8] = b"storage";
 const NEXT_ID: &[u8] = b"crypto_key_id";
 
 impl<S: OffchainStorage> Api<S> {
-	fn seed(&self, key: Option<CryptoKeyId>) -> Option<CryptoSeed> {
+	fn keypair<P: Pair>(&self, phrase: &str) -> Result<P, ()> {
+		P::from_phrase(phrase, Some(self.keys_password.as_ref()))
+			.map_err(|e| {
+				warn!("Error recovering Offchain Worker key. Password invalid? {:?}", e);
+				()
+			})
+			.map(|x| x.0)
+	}
+
+	fn read_key(&self, key: Option<CryptoKeyId>) -> Result<CryptoKey, ()> {
 		match key {
-			None => unavailable_yet("pre-configured key"),
+			None => {
+				unavailable_yet::<()>("pre-configured key");
+				Err(())
+			},
 			Some(id) => {
 				self.db.get(KEYS_PREFIX, &id.0.encode())
-					.and_then(|x| CryptoSeed::decode(&mut &*x))
-			}
+					.and_then(|key| CryptoKey::decode(&mut &*key))
+					.ok_or(())
+			},
 		}
 	}
 }
@@ -85,13 +97,13 @@ impl<S: OffchainStorage> OffchainExt for Api<S> {
 			.map_err(|_| ())
 	}
 
-	fn new_crypto_key(&mut self, crypto: CryptoKind) -> Result<CryptoKeyId, ()> {
-		let seed = match crypto {
+	fn new_crypto_key(&mut self, kind: CryptoKind) -> Result<CryptoKeyId, ()> {
+		let phrase = match kind {
 			CryptoKind::Ed25519 => {
-				CryptoSeed::Ed25519(ed25519::Pair::generate_with_phrase(None).2)
+				ed25519::Pair::generate_with_phrase(Some(self.keys_password.as_ref())).1
 			},
 			CryptoKind::Sr25519 => {
-				CryptoSeed::Sr25519(sr25519::Pair::generate_with_phrase(None).2)
+				sr25519::Pair::generate_with_phrase(Some(self.keys_password.as_ref())).1
 			},
 		};
 
@@ -108,7 +120,7 @@ impl<S: OffchainStorage> OffchainExt for Api<S> {
 			}
 		};
 
-		self.db.set(KEYS_PREFIX, &id_encoded, &seed.encode());
+		self.db.set(KEYS_PREFIX, &id_encoded, &CryptoKey { phrase, kind } .encode());
 
 		Ok(CryptoKeyId(id))
 	}
@@ -125,26 +137,27 @@ impl<S: OffchainStorage> OffchainExt for Api<S> {
 	}
 
 	fn sign(&mut self, key: Option<CryptoKeyId>, data: &[u8]) -> Result<Vec<u8>, ()> {
-		let seed = self.seed(key).ok_or(())?;
-		Ok(match seed {
-			CryptoSeed::Sr25519(seed) => {
-				sr25519::Pair::from_seed(&seed).sign(data).0.to_vec()
-			},
-			CryptoSeed::Ed25519(seed) => {
-				ed25519::Pair::from_seed(&seed).sign(data).0.to_vec()
-			}
+		let key = self.read_key(key)?;
+		Ok(match key.kind {
+			CryptoKind::Sr25519 => self.keypair::<sr25519::Pair>(&key.phrase)?
+				.sign(data)
+				.0.to_vec()
+			,
+			CryptoKind::Ed25519 => self.keypair::<ed25519::Pair>(&key.phrase)?
+				.sign(data)
+				.0.to_vec(),
 		})
 	}
 
 	fn verify(&mut self, key: Option<CryptoKeyId>, msg: &[u8], signature: &[u8]) -> Result<bool, ()> {
-		let seed = self.seed(key).ok_or(())?;
-		Ok(match seed {
-			CryptoSeed::Sr25519(seed) => {
-				let public = sr25519::Pair::from_seed(&seed).public();
+		let key = self.read_key(key)?;
+		Ok(match key.kind {
+			CryptoKind::Sr25519 => {
+				let public = self.keypair::<sr25519::Pair>(&key.phrase)?.public();
 				sr25519::Pair::verify_weak(signature, msg, public)
 			},
-			CryptoSeed::Ed25519(seed) => {
-				let public = ed25519::Pair::from_seed(&seed).public();
+			CryptoKind::Ed25519 => {
+				let public = self.keypair::<ed25519::Pair>(&key.phrase)?.public();
 				ed25519::Pair::verify_weak(signature, msg, public)
 			}
 		})
@@ -251,6 +264,7 @@ impl<A: ChainApi> AsyncApi<A> {
 	pub fn new<S: OffchainStorage>(
 		transaction_pool: Arc<Pool<A>>,
 		db: S,
+		keys_password: Protected<String>,
 		at: BlockId<A::Block>,
 	) -> (Api<S>, AsyncApi<A>) {
 		let (sender, rx) = mpsc::unbounded();
@@ -258,6 +272,7 @@ impl<A: ChainApi> AsyncApi<A> {
 		let api = Api {
 			sender,
 			db,
+			keys_password,
 		};
 
 		let async_api = AsyncApi {
@@ -311,7 +326,7 @@ mod tests {
 		let client = Arc::new(test_client::new());
 		let pool = Arc::new(Pool::new(Default::default(), transaction_pool::ChainApi::new(client.clone())));
 
-		AsyncApi::new(pool, db, BlockId::Number(0))
+		AsyncApi::new(pool, db, "pass".to_owned(), BlockId::Number(0))
 	}
 
 	#[test]
