@@ -16,17 +16,29 @@
 
 //! DB-backed changes tries storage.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use kvdb::{KeyValueDB, DBTransaction};
+use parity_codec::Encode;
 use parking_lot::RwLock;
+use client::error::{Error as ClientError, Result as ClientResult};
 use trie::MemoryDB;
+use client::blockchain::well_known_cache_keys;
 use primitives::{H256, Blake2Hasher, ChangesTrieConfiguration, convert_hash};
 use runtime_primitives::traits::{
 	Block as BlockT, Header as HeaderT, NumberFor, Zero, One,
 };
-use runtime_primitives::generic::{BlockId, DigestItem};
+use runtime_primitives::generic::{BlockId, DigestItem, ChangesTrieSignal};
 use state_machine::DBValue;
 use crate::utils::{self, Meta};
+use crate::cache::{DbCacheSync, DbCache, DbCacheTransactionOps, ComplexBlockId, EntryType as CacheEntryType};
+
+/// Extract new changes trie configuration (if available) from the header.
+pub fn extract_new_configuration<Header: HeaderT>(header: &Header) -> Option<&Option<ChangesTrieConfiguration>> {
+	header.digest()
+		.log(DigestItem::as_changes_trie_signal)
+		.and_then(ChangesTrieSignal::as_new_configuration)
+}
 
 pub struct DbChangesTrieStorage<Block: BlockT> {
 	db: Arc<dyn KeyValueDB>,
@@ -35,6 +47,7 @@ pub struct DbChangesTrieStorage<Block: BlockT> {
 	header_column: Option<u32>,
 	meta: Arc<RwLock<Meta<NumberFor<Block>, Block::Hash>>>,
 	min_blocks_to_keep: Option<u32>,
+	cache: DbCacheSync<Block>,
 	_phantom: ::std::marker::PhantomData<Block>,
 }
 
@@ -45,25 +58,68 @@ impl<Block: BlockT<Hash=H256>> DbChangesTrieStorage<Block> {
 		changes_tries_column: Option<u32>,
 		key_lookup_column: Option<u32>,
 		header_column: Option<u32>,
+		cache_column: Option<u32>,
 		meta: Arc<RwLock<Meta<NumberFor<Block>, Block::Hash>>>,
 		min_blocks_to_keep: Option<u32>,
 	) -> Self {
+		let (finalized_hash, finalized_number, genesis_hash) = {
+			let meta = meta.read();
+			(meta.finalized_hash, meta.finalized_number, meta.genesis_hash)
+		};
 		Self {
-			db,
+			db: db.clone(),
 			changes_tries_column,
 			key_lookup_column,
 			header_column,
 			meta,
 			min_blocks_to_keep,
+			cache: DbCacheSync(RwLock::new(DbCache::new(
+				db.clone(),
+				key_lookup_column,
+				header_column,
+				cache_column,
+				genesis_hash,
+				ComplexBlockId::new(finalized_hash, finalized_number),
+			))),
 			_phantom: Default::default(),
 		}
 	}
 
 	/// Commit new changes trie.
-	pub fn commit(&self, tx: &mut DBTransaction, mut changes_trie: MemoryDB<Blake2Hasher>) {
+	pub fn commit(
+		&self,
+		tx: &mut DBTransaction,
+		mut changes_trie: MemoryDB<Blake2Hasher>,
+		parent_block: ComplexBlockId<Block>,
+		block: ComplexBlockId<Block>,
+		finalized: bool,
+		new_configuration: Option<Option<ChangesTrieConfiguration>>,
+	) -> ClientResult<Option<DbCacheTransactionOps<Block>>> {
 		for (key, (val, _)) in changes_trie.drain() {
 			tx.put(self.changes_tries_column, &key[..], &val);
 		}
+
+		// TODO: (separate PR - make cache treat None as previous value, not the unknown one)
+		if let Some(new_configuration) = new_configuration {
+			let mut cache_at = HashMap::new();
+			cache_at.insert(well_known_cache_keys::CHANGES_TRIE_CONFIG, new_configuration.encode());
+
+			Ok(Some(self.cache.0.write().transaction(tx)
+				.on_block_insert(
+					parent_block,
+					block,
+					cache_at,
+					if finalized { CacheEntryType::Final } else { CacheEntryType::NonFinal },
+				)?
+				.into_ops()))
+		} else {
+			Ok(None)
+		}
+	}
+
+	/// When transaction has been committed.
+	pub fn post_commit(&self, cache_ops: DbCacheTransactionOps<Block>) {
+		self.cache.0.write().commit(cache_ops);
 	}
 
 	/// Prune obsolete changes tries.
