@@ -55,8 +55,8 @@ cd doc-docker
 
 启动成功之后你就可以通过 `http://localhost:2299/settings.html` 查看完整文档了。对源码中某个函数/方法/类库有疑问或者不知道其作用，只需在此页面中搜索其名称即可找到相应的文档。
 
+> 如果机器重启或 docker 服务重启，只需使用 `docker start substrate-doc` 命令启动容器即可，不用反复构建。
+>
 > 如果不使用 docker，则可以直接访问 `<repo path>/target/doc/settings.html` 查看文档。
-
-如果机器重启或 docker 服务重启，只需使用 `docker start substrate-doc` 命令启动容器即可，不用反复构建。
 
 ## 其他
