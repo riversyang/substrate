@@ -22,11 +22,11 @@ use crate::wasm::env_def::ImportSatisfyCheck;
 use crate::wasm::PrefabWasmModule;
 use crate::Schedule;
 
-use parity_wasm::elements::{self, Internal, External, MemoryType, Type};
+use parity_wasm::elements::{self, Internal, External, MemoryType, Type, ValueType};
 use pwasm_utils;
 use pwasm_utils::rules;
 use rstd::prelude::*;
-use runtime_primitives::traits::{SaturatedConversion};
+use sr_primitives::traits::{SaturatedConversion};
 
 struct ContractModule<'a> {
 	/// A deserialized module. The module is valid (this is Guaranteed by `new` method).
@@ -71,6 +71,69 @@ impl<'a> ContractModule<'a> {
 		{
 			return Err("module declares internal memory");
 		}
+		Ok(())
+	}
+
+	/// Ensures that tables declared in the module are not too big.
+	fn ensure_table_size_limit(&self, limit: u32) -> Result<(), &'static str> {
+        if let Some(table_section) = self.module.table_section() {
+			// In Wasm MVP spec, there may be at most one table declared. Double check this
+			// explicitly just in case the Wasm version changes.
+			if table_section.entries().len() > 1 {
+				return Err("multiple tables declared");
+			}
+			if let Some(table_type) = table_section.entries().first() {
+				// Check the table's initial size as there is no instruction or environment function
+				// capable of growing the table.
+				if table_type.limits().initial() > limit {
+					return Err("table exceeds maximum size allowed")
+				}
+			}
+		}
+		Ok(())
+	}
+
+	/// Ensures that no floating point types are in use.
+	fn ensure_no_floating_types(&self) -> Result<(), &'static str> {
+		if let Some(global_section) = self.module.global_section() {
+			for global in global_section.entries() {
+				match global.global_type().content_type() {
+					ValueType::F32 | ValueType::F64 =>
+						return Err("use of floating point type in globals is forbidden"),
+					_ => {}
+				}
+			}
+		}
+
+		if let Some(code_section) = self.module.code_section() {
+			for func_body in code_section.bodies() {
+				for local in func_body.locals() {
+					match local.value_type() {
+						ValueType::F32 | ValueType::F64 =>
+							return Err("use of floating point type in locals is forbidden"),
+						_ => {}
+					}
+				}
+			}
+		}
+
+		if let Some(type_section) = self.module.type_section() {
+			for wasm_type in type_section.types() {
+				match wasm_type {
+					Type::Function(func_type) => {
+						let return_type = func_type.return_type();
+						for value_type in func_type.params().iter().chain(return_type.iter()) {
+							match value_type {
+								ValueType::F32 | ValueType::F64 =>
+									return Err("use of floating point type in function types is forbidden"),
+								_ => {}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		Ok(())
 	}
 
@@ -164,14 +227,20 @@ impl<'a> ContractModule<'a> {
 			};
 
 			// Then check the signature.
-			// Both "call" and "deploy" has a () -> () function type.
+			// Both "call" and "deploy" has a [] -> [] or [] -> [i32] function type.
+			//
+			// The [] -> [] signature predates the [] -> [i32] signature and is supported for
+			// backwards compatibility. This will likely be removed once ink! is updated to
+			// generate modules with the new function signatures.
 			let func_ty_idx = func_entries.get(fn_idx as usize)
 				.ok_or_else(|| "export refers to non-existent function")?
 				.type_ref();
 			let Type::Function(ref func_ty) = types
 				.get(func_ty_idx as usize)
 				.ok_or_else(|| "function has a non-existent type")?;
-			if !(func_ty.params().is_empty() && func_ty.return_type().is_none()) {
+			if !func_ty.params().is_empty() ||
+				!(func_ty.return_type().is_none() ||
+					func_ty.return_type() == Some(ValueType::I32)) {
 				return Err("entry point has wrong signature");
 			}
 		}
@@ -271,6 +340,8 @@ pub fn prepare_contract<C: ImportSatisfyCheck>(
 	let mut contract_module = ContractModule::new(original_code, schedule)?;
 	contract_module.scan_exports()?;
 	contract_module.ensure_no_internal_memory()?;
+	contract_module.ensure_table_size_limit(schedule.max_table_size)?;
+	contract_module.ensure_no_floating_types()?;
 
 	struct MemoryDefinition {
 		initial: u32,
@@ -503,6 +574,49 @@ mod tests {
 		);
 	}
 
+	mod tables {
+		use super::*;
+
+		// Tests below assumes that maximum table size is configured to a certain number.
+		#[test]
+		fn assume_table_size() {
+			assert_eq!(Schedule::default().max_table_size, 16384);
+		}
+
+		prepare_test!(no_tables,
+			r#"
+			(module
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Ok(_)
+		);
+
+		prepare_test!(table_valid_size,
+			r#"
+			(module
+				(table 10000 funcref)
+
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Ok(_)
+		);
+
+		prepare_test!(table_too_big,
+			r#"
+			(module
+				(table 20000 funcref)
+
+				(func (export "call"))
+				(func (export "deploy"))
+			)"#,
+			Err("table exceeds maximum size allowed")
+		);
+	}
+
 	mod imports {
 		use super::*;
 
@@ -676,6 +790,50 @@ mod tests {
 			)
 			"#,
 			Err("unknown export: expecting only deploy and call functions")
+		);
+
+		prepare_test!(global_float,
+			r#"
+			(module
+				(global $x f32 (f32.const 0))
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Err("use of floating point type in globals is forbidden")
+		);
+
+		prepare_test!(local_float,
+			r#"
+			(module
+				(func $foo (local f32))
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Err("use of floating point type in locals is forbidden")
+		);
+
+		prepare_test!(param_float,
+			r#"
+			(module
+				(func $foo (param f32))
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Err("use of floating point type in function types is forbidden")
+		);
+
+		prepare_test!(result_float,
+			r#"
+			(module
+				(func $foo (result f32) (f32.const 0))
+				(func (export "call"))
+				(func (export "deploy"))
+			)
+			"#,
+			Err("use of floating point type in function types is forbidden")
 		);
 	}
 }

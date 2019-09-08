@@ -20,7 +20,7 @@
 
 use crate::error::{Result, Error};
 use std::{collections::HashMap, rc::Rc};
-use parity_codec::{Decode, Encode};
+use codec::{Decode, Encode};
 use primitives::sandbox as sandbox_primitives;
 use wasmi::{
 	Externals, FuncRef, ImportResolver, MemoryInstance, MemoryRef, Module, ModuleInstance,
@@ -193,7 +193,7 @@ fn trap(msg: &'static str) -> Trap {
 fn deserialize_result(serialized_result: &[u8]) -> std::result::Result<Option<RuntimeValue>, Trap> {
 	use self::sandbox_primitives::{HostError, ReturnValue};
 	let result_val = std::result::Result::<ReturnValue, HostError>::decode(&mut &serialized_result[..])
-		.ok_or_else(|| trap("Decoding Result<ReturnValue, HostError> failed!"))?;
+		.map_err(|_| trap("Decoding Result<ReturnValue, HostError> failed!"))?;
 
 	match result_val {
 		Ok(return_value) => Ok(match return_value {
@@ -341,11 +341,11 @@ impl SandboxInstance {
 	}
 }
 
-/// Error occured during instantiation of a sandboxed module.
+/// Error occurred during instantiation of a sandboxed module.
 pub enum InstantiationError {
 	/// Something wrong with the environment definition. It either can't
 	/// be decoded, have a reference to a non-existent or torn down memory instance.
-	EnvironmentDefintionCorrupted,
+	EnvironmentDefinitionCorrupted,
 	/// Provided module isn't recognized as a valid webassembly binary.
 	ModuleDecoding,
 	/// Module is a well-formed webassembly binary but could not be instantiated. This could
@@ -361,7 +361,7 @@ fn decode_environment_definition(
 	memories: &[Option<MemoryRef>],
 ) -> std::result::Result<(Imports, GuestToSupervisorFunctionMapping), InstantiationError> {
 	let env_def = sandbox_primitives::EnvironmentDefinition::decode(&mut &raw_env_def[..])
-		.ok_or_else(|| InstantiationError::EnvironmentDefintionCorrupted)?;
+		.map_err(|_| InstantiationError::EnvironmentDefinitionCorrupted)?;
 
 	let mut func_map = HashMap::new();
 	let mut memories_map = HashMap::new();
@@ -381,8 +381,8 @@ fn decode_environment_definition(
 				let memory_ref = memories
 					.get(memory_idx as usize)
 					.cloned()
-					.ok_or_else(|| InstantiationError::EnvironmentDefintionCorrupted)?
-					.ok_or_else(|| InstantiationError::EnvironmentDefintionCorrupted)?;
+					.ok_or_else(|| InstantiationError::EnvironmentDefinitionCorrupted)?
+					.ok_or_else(|| InstantiationError::EnvironmentDefinitionCorrupted)?;
 				memories_map.insert((module, field), memory_ref);
 			}
 		}
@@ -566,13 +566,14 @@ mod tests {
 	use crate::wasm_executor::WasmExecutor;
 	use state_machine::TestExternalities as CoreTestExternalities;
 	use wabt;
+	use runtime_test::WASM_BINARY;
 
 	type TestExternalities<H> = CoreTestExternalities<H, u64>;
 
 	#[test]
 	fn sandbox_should_work() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -604,7 +605,7 @@ mod tests {
 	#[test]
 	fn sandbox_trap() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -625,7 +626,7 @@ mod tests {
 	#[test]
 	fn sandbox_should_trap_when_heap_exhausted() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -650,7 +651,7 @@ mod tests {
 	#[test]
 	fn start_called() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -688,7 +689,7 @@ mod tests {
 	#[test]
 	fn invoke_args() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -722,7 +723,7 @@ mod tests {
 	#[test]
 	fn return_val() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -744,7 +745,7 @@ mod tests {
 	#[test]
 	fn unlinkable_module() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -764,7 +765,7 @@ mod tests {
 	#[test]
 	fn corrupted_module() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		// Corrupted wasm file
 		let code = &[0, 0, 0, 0, 1, 0, 0, 0];
@@ -778,7 +779,7 @@ mod tests {
 	#[test]
 	fn start_fn_ok() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module
@@ -801,7 +802,7 @@ mod tests {
 	#[test]
 	fn start_fn_traps() {
 		let mut ext = TestExternalities::<Blake2Hasher>::default();
-		let test_code = include_bytes!("../wasm/target/wasm32-unknown-unknown/release/runtime_test.compact.wasm");
+		let test_code = WASM_BINARY;
 
 		let code = wabt::wat2wasm(r#"
 		(module

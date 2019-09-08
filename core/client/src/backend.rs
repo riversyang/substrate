@@ -16,16 +16,17 @@
 
 //! Substrate Client data backend
 
+use std::sync::Arc;
 use std::collections::HashMap;
 use crate::error;
+use crate::light::blockchain::RemoteBlockchain;
 use primitives::ChangesTrieConfiguration;
-use runtime_primitives::{generic::BlockId, Justification, StorageOverlay, ChildrenStorageOverlay};
-use runtime_primitives::traits::{Block as BlockT, NumberFor};
+use sr_primitives::{generic::BlockId, Justification, StorageOverlay, ChildrenStorageOverlay};
+use sr_primitives::traits::{Block as BlockT, NumberFor};
 use state_machine::backend::Backend as StateBackend;
-use state_machine::ChangesTrieStorage as StateChangesTrieStorage;
-use consensus::well_known_cache_keys;
+use state_machine::{ChangesTrieStorage as StateChangesTrieStorage, ChangesTrieTransaction};
+use consensus::{well_known_cache_keys, BlockOrigin};
 use hash_db::Hasher;
-use trie::MemoryDB;
 use parking_lot::Mutex;
 
 /// In memory array of storage values.
@@ -33,6 +34,26 @@ pub type StorageCollection = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
 /// In memory arrays of storage values for multiple child tries.
 pub type ChildStorageCollection = Vec<(Vec<u8>, StorageCollection)>;
+
+pub(crate) struct ImportSummary<Block: BlockT> {
+	pub(crate) hash: Block::Hash,
+	pub(crate) origin: BlockOrigin,
+	pub(crate) header: Block::Header,
+	pub(crate) is_new_best: bool,
+	pub(crate) storage_changes: Option<(StorageCollection, ChildStorageCollection)>,
+	pub(crate) retracted: Vec<Block::Hash>,
+}
+
+/// Import operation wrapper
+pub struct ClientImportOperation<
+	Block: BlockT,
+	H: Hasher<Out=Block::Hash>,
+	B: Backend<Block, H>,
+> {
+	pub(crate) op: B::BlockImportOperation,
+	pub(crate) notify_imported: Option<ImportSummary<Block>>,
+	pub(crate) notify_finalized: Vec<Block::Hash>,
+}
 
 /// State of a new block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +116,7 @@ pub trait BlockImportOperation<Block, H> where
 		child_update: ChildStorageCollection,
 	) -> error::Result<()>;
 	/// Inject changes trie data into the database.
-	fn update_changes_trie(&mut self, update: MemoryDB<H>) -> error::Result<()>;
+	fn update_changes_trie(&mut self, update: ChangesTrieTransaction<H, NumberFor<Block>>) -> error::Result<()>;
 	/// Insert auxiliary keys. Values are `None` if should be deleted.
 	fn insert_aux<I>(&mut self, ops: I) -> error::Result<()>
 		where I: IntoIterator<Item=(Vec<u8>, Option<Vec<u8>>)>;
@@ -103,6 +124,45 @@ pub trait BlockImportOperation<Block, H> where
 	fn mark_finalized(&mut self, id: BlockId<Block>, justification: Option<Justification>) -> error::Result<()>;
 	/// Mark a block as new head. If both block import and set head are specified, set head overrides block import's best block rule.
 	fn mark_head(&mut self, id: BlockId<Block>) -> error::Result<()>;
+}
+
+/// Finalize Facilities
+pub trait Finalizer<Block: BlockT, H: Hasher<Out=Block::Hash>, B: Backend<Block, H>> {
+	/// Mark all blocks up to given as finalized in operation. If a
+	/// justification is provided it is stored with the given finalized
+	/// block (any other finalized blocks are left unjustified).
+	///
+	/// If the block being finalized is on a different fork from the current
+	/// best block the finalized block is set as best, this might be slightly
+	/// inaccurate (i.e. outdated). Usages that require determining an accurate
+	/// best block should use `SelectChain` instead of the client.
+	fn apply_finality(
+		&self,
+		operation: &mut ClientImportOperation<Block, H, B>,
+		id: BlockId<Block>,
+		justification: Option<Justification>,
+		notify: bool,
+	) -> error::Result<()>;
+
+		
+	/// Finalize a block. This will implicitly finalize all blocks up to it and
+	/// fire finality notifications.
+	///
+	/// If the block being finalized is on a different fork from the current
+	/// best block, the finalized block is set as best. This might be slightly
+	/// inaccurate (i.e. outdated). Usages that require determining an accurate
+	/// best block should use `SelectChain` instead of the client.
+	///
+	/// Pass a flag to indicate whether finality notifications should be propagated.
+	/// This is usually tied to some synchronization state, where we don't send notifications
+	/// while performing major synchronization work.
+	fn finalize_block(
+		&self,
+		id: BlockId<Block>,
+		justification: Option<Justification>,
+		notify: bool,
+	) -> error::Result<()>;
+
 }
 
 /// Provides access to an auxiliary database.
@@ -139,6 +199,8 @@ pub trait Backend<Block, H>: AuxStore + Send + Sync where
 	type State: StateBackend<H>;
 	/// Changes trie storage.
 	type ChangesTrieStorage: PrunableStateChangesTrieStorage<Block, H>;
+	/// Offchain workers local storage.
+	type OffchainStorage: OffchainStorage;
 
 	/// Begin a new block insertion transaction with given parent block id.
 	/// When constructing the genesis, this is called with all-zero hash.
@@ -156,6 +218,8 @@ pub trait Backend<Block, H>: AuxStore + Send + Sync where
 	fn used_state_cache_size(&self) -> Option<usize>;
 	/// Returns reference to changes trie storage.
 	fn changes_trie_storage(&self) -> Option<&Self::ChangesTrieStorage>;
+	/// Returns a handle to offchain storage.
+	fn offchain_storage(&self) -> Option<Self::OffchainStorage>;
 	/// Returns true if state for given block is available.
 	fn have_state_at(&self, hash: &Block::Hash, _number: NumberFor<Block>) -> bool {
 		self.state_at(BlockId::Hash(hash.clone())).is_ok()
@@ -194,6 +258,26 @@ pub trait Backend<Block, H>: AuxStore + Send + Sync where
 	fn get_import_lock(&self) -> &Mutex<()>;
 }
 
+/// Offchain workers local storage.
+pub trait OffchainStorage: Clone + Send + Sync {
+	/// Persist a value in storage under given key and prefix.
+	fn set(&mut self, prefix: &[u8], key: &[u8], value: &[u8]);
+
+	/// Retrieve a value from storage under given key and prefix.
+	fn get(&self, prefix: &[u8], key: &[u8]) -> Option<Vec<u8>>;
+
+	/// Replace the value in storage if given old_value matches the current one.
+	///
+	/// Returns `true` if the value has been set and false otherwise.
+	fn compare_and_set(
+		&mut self,
+		prefix: &[u8],
+		key: &[u8],
+		old_value: Option<&[u8]>,
+		new_value: &[u8],
+	) -> bool;
+}
+
 /// Changes trie storage that supports pruning.
 pub trait PrunableStateChangesTrieStorage<Block: BlockT, H: Hasher>:
 	StateChangesTrieStorage<H, NumberFor<Block>>
@@ -221,4 +305,7 @@ where
 {
 	/// Returns true if the state for given block is available locally.
 	fn is_local_state_available(&self, block: &BlockId<Block>) -> bool;
+	/// Returns reference to blockchain backend that either resolves blockchain data
+	/// locally, or prepares request to fetch that data from remote node.
+	fn remote_blockchain(&self) -> Arc<dyn RemoteBlockchain<Block>>;
 }
