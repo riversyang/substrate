@@ -2,7 +2,7 @@
 
 本工程 fork 自 Substrate 官方 repo，我个人在学习过程中为 Substrate 源码增加了一些中文注释，以帮助国内开发者快速学习理解 Substrate。
 
-你当然也可以参考 [原版 README](README_origin.adoc) 来学习。
+你当然也可以参考 [原版 README](README.adoc) 来学习。
 
 **本工程的目的是为中文开发者分享我个人学习 Substrate 和 Rust 语言的经验以及技术细节，请不要用于商业目的。希望大家秉承开源精神，共建开源文化！**
 
